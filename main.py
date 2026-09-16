@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 
 # ============ НАСТРОЙКИ ============
-BOT_TOKEN = "СЮДА_ТОКЕН_БОТА"
+BOT_TOKEN = "8823476223:AAFreWc3G-nE3IQiz-Nsbgu3YBxhGKQ6g1Y"
 BOT_USERNAME = "letsqpbot"  # без @
 
 # Три избранных получателя — только им реально приходят сообщения
