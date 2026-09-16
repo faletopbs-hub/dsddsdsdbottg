@@ -1,9 +1,11 @@
 import asyncio
+import os
 import random
 import string
 import sqlite3
 from datetime import datetime
 
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -15,17 +17,34 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
-# ============ НАСТРОЙКИ ============
-BOT_TOKEN = "8823476223:AAFreWc3G-nE3IQiz-Nsbgu3YBxhGKQ6g1Y"
-BOT_USERNAME = "letsqpbot"  # без @
+# ============ ЗАГРУЗКА ENV ============
+load_dotenv()
 
-# Три избранных получателя — только им реально приходят сообщения
-RECIPIENT_IDS = {6657840585, 1644619383, 8940835512}
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "letsqpbot")
 
-# Жёстко закреплённые payload'ы
-FIXED_PAYLOADS = {
-    6657840585: "t35h4",
+if not BOT_TOKEN:
+    raise SystemExit("❌ Не задан BOT_TOKEN в переменных окружения")
+
+# "6657840585,1644619383,8940835512" -> {6657840585, 1644619383, 8940835512}
+RECIPIENT_IDS = {
+    int(x.strip())
+    for x in os.getenv("RECIPIENT_IDS", "").split(",")
+    if x.strip()
 }
+
+# "6657840585:t35h4,123:abc" -> {6657840585: "t35h4", 123: "abc"}
+FIXED_PAYLOADS = {}
+_raw_fixed = os.getenv("FIXED_PAYLOADS", "")
+for pair in _raw_fixed.split(","):
+    pair = pair.strip()
+    if not pair or ":" not in pair:
+        continue
+    uid_str, payload = pair.split(":", 1)
+    try:
+        FIXED_PAYLOADS[int(uid_str.strip())] = payload.strip()
+    except ValueError:
+        continue
 
 # ============ БОТ ============
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -60,7 +79,6 @@ class AnonFlow(StatesGroup):
 
 # ============ УТИЛИТЫ ============
 def gen_payload(length: int = 5) -> str:
-    """Генерирует уникальный код типа 't2f5h'."""
     alphabet = string.ascii_lowercase + string.digits
     while True:
         code = "".join(random.choices(alphabet, k=length))
@@ -70,12 +88,10 @@ def gen_payload(length: int = 5) -> str:
 
 
 def get_or_create_payload(user_id: int) -> str:
-    # 1. Если payload уже есть в базе — возвращаем его
     row = db.execute("SELECT payload FROM users WHERE user_id = ?", (user_id,)).fetchone()
     if row:
         return row[0]
 
-    # 2. Если для этого юзера задан фиксированный payload — используем его
     if user_id in FIXED_PAYLOADS:
         payload = FIXED_PAYLOADS[user_id]
         db.execute("DELETE FROM users WHERE payload = ? AND user_id != ?", (payload, user_id))
@@ -86,7 +102,6 @@ def get_or_create_payload(user_id: int) -> str:
         db.commit()
         return payload
 
-    # 3. Иначе — генерим случайный
     payload = gen_payload()
     db.execute(
         "INSERT INTO users (user_id, payload, created_at) VALUES (?, ?, ?)",
@@ -102,7 +117,6 @@ def get_recipient_by_payload(payload: str):
 
 
 def seed_fixed_payloads():
-    """Прописывает фиксированные payload'ы в базу при запуске бота."""
     for user_id, payload in FIXED_PAYLOADS.items():
         db.execute("DELETE FROM users WHERE payload = ? AND user_id != ?", (payload, user_id))
         db.execute(
@@ -137,7 +151,6 @@ def anon_message_keyboard() -> InlineKeyboardMarkup:
 # ============ /start ============
 @dp.message(CommandStart(deep_link=False))
 async def start_plain(message: Message, state: FSMContext):
-    """Юзер зашёл без payload — это владелец ссылки."""
     await state.clear()
     user_id = message.from_user.id
     payload = get_or_create_payload(user_id)
@@ -154,7 +167,6 @@ async def start_plain(message: Message, state: FSMContext):
 
 @dp.message(CommandStart(deep_link=True))
 async def start_with_payload(message: Message, command: CommandObject, state: FSMContext):
-    """Кто-то перешёл по чужой ссылке — готов писать анонимно."""
     await state.clear()
     payload = command.args
     sender_id = message.from_user.id
@@ -164,12 +176,10 @@ async def start_with_payload(message: Message, command: CommandObject, state: FS
         await message.answer("⚠️ Ссылка недействительна.")
         return
 
-    # нельзя писать самому себе по своей же ссылке
     if sender_id == recipient_id:
         await message.answer("Это твоя собственная ссылка 🙂 Отправь её друзьям!")
         return
 
-    # все получают одинаковый ответ, но реально долетит только избранным
     is_real = recipient_id in RECIPIENT_IDS
     await state.update_data(recipient_id=recipient_id, is_real=is_real, payload=payload)
     await state.set_state(AnonFlow.waiting_message)
@@ -188,11 +198,9 @@ async def receive_anon(message: Message, state: FSMContext):
     payload = data.get("payload")
     sender_id = message.from_user.id
 
-    # отправителю ВСЕГДА говорим, что ушло (тихая смерть)
     await message.answer("💌 Твоё сообщение отправлено анонимно!")
     await state.clear()
 
-    # если получатель не из избранных — тихо игнорим
     if not is_real or recipient_id not in RECIPIENT_IDS:
         return
 
